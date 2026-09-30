@@ -5,42 +5,20 @@ import plotly.graph_objects as go
 from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense
+import yfinance as yf
 
 st.set_page_config(page_title="Reliance LSTM")
-st.title("LSTM - Reliance Stock Prediction")
+st.title("LSTM - Reliance Stock Prediction (2020-2025)")
 
-df = pd.read_csv("RELIANCE_2020-2025.csv")
-df.columns = df.columns.str.strip()
+st.info("Downloading real Reliance data...")
 
-# Find cols
-close_col = next((c for c in df.columns if 'close' in c.lower() and 'prev' not in c.lower()), df.columns[-4])
-date_col = next((c for c in df.columns if 'date' in c.lower()), df.columns[0])
+df = yf.download("RELIANCE.NS", period="5y", auto_adjust=True).reset_index()
+df = df.dropna()
 
-df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
-df[close_col] = pd.to_numeric(df[close_col], errors='coerce')
-df = df.dropna(subset=[close_col, date_col]).sort_values(date_col)
-
-# Try to filter EQ if exists, else use all
-if 'Series' in df.columns and (df['Series']=='EQ').any():
-    df_eq = df[df['Series']=='EQ']
-    if len(df_eq) > 60:
-        df = df_eq
-
-# Remove only extreme junk, not all
-df = df[df[close_col] > 0]
-
-if len(df) < 70:
-    st.warning("CSV has too few rows. Downloading real Reliance data from Yahoo...")
-    import yfinance as yf
-    df = yf.download("RELIANCE.NS", period="5y", auto_adjust=True).reset_index()
-    date_col = 'Date'
-    close_col = 'Close'
-    df[close_col] = pd.to_numeric(df[close_col], errors='coerce')
-
-st.success(f"Loaded: {len(df)} rows from {df[date_col].min()} to {df[date_col].max()}")
+st.success(f"Loaded: {len(df)} real trading days from {df['Date'].min().date()} to {df['Date'].max().date()}")
 st.dataframe(df.tail())
 
-close_prices = df[[close_col]].values.astype(float)
+close_prices = df[['Close']].values
 scaler = MinMaxScaler()
 scaled = scaler.fit_transform(close_prices)
 
@@ -54,7 +32,6 @@ model = Sequential([LSTM(50, return_sequences=True, input_shape=(60,1)), LSTM(50
 model.compile(optimizer='adam', loss='mse')
 model.fit(X,y, epochs=5, batch_size=32, verbose=0)
 
-# Forecast
 last = scaled[-60:].reshape(1,60,1)
 preds = []
 curr = last
@@ -66,7 +43,11 @@ for _ in range(30):
 future = scaler.inverse_transform(np.array(preds).reshape(-1,1))
 
 fig = go.Figure()
-fig.add_trace(go.Scatter(y=close_prices.flatten(), name="Actual"))
-fig.add_trace(go.Scatter(x=list(range(len(close_prices), len(close_prices)+30)), y=future.flatten(), name="Predicted 30 Days"))
-st.plotly_chart(fig)
+fig.add_trace(go.Scatter(x=df['Date'], y=close_prices.flatten(), name="Actual Price (Rs)"))
+future_dates = pd.date_range(df['Date'].iloc[-1], periods=31, freq='B')[1:]
+fig.add_trace(go.Scatter(x=future_dates, y=future.flatten(), name="Predicted Next 30 Days", line=dict(color='orange', dash='dash')))
+fig.update_layout(title="Reliance (NSE) - 5 Year Actual vs 30 Day LSTM Forecast", xaxis_title="Date", yaxis_title="Price (Rs)")
+st.plotly_chart(fig, use_container_width=True)
+
 st.metric("Next Day Prediction", f"Rs. {float(future[0][0]):.2f}")
+st.metric("30-Day Forecast (Last)", f"Rs. {float(future[-1][0]):.2f}")
