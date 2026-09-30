@@ -6,44 +6,41 @@ from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense
 
-st.set_page_config(page_title="Reliance LSTM Prediction")
-
-st.title("Reliance Stock Prediction using LSTM")
+st.set_page_config(page_title="Reliance LSTM")
+st.title("LSTM - Reliance Stock Prediction")
 
 df = pd.read_csv("RELIANCE_2020-2025.csv")
-# Clean column names
 df.columns = df.columns.str.strip()
 
-# Auto-detect Close column
-close_col = None
-for c in df.columns:
-    if 'close' in c.lower() and 'prev' not in c.lower():
-        close_col = c
-        break
-if close_col is None:
-    close_col = 'Close Price'
+# Find cols
+close_col = next((c for c in df.columns if 'close' in c.lower() and 'prev' not in c.lower()), df.columns[-4])
+date_col = next((c for c in df.columns if 'date' in c.lower()), df.columns[0])
 
-# Convert Date
-date_col = [c for c in df.columns if 'date' in c.lower()][0]
 df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
-df = df.sort_values(date_col)
+df[close_col] = pd.to_numeric(df[close_col], errors='coerce')
+df = df.dropna(subset=[close_col, date_col]).sort_values(date_col)
 
-# CRITICAL FIX: Keep only EQ series and real prices
-if 'Series' in df.columns:
-    df = df[df['Series'].isin(['EQ','BE'])]
-if df[close_col].astype(str).str.replace('.','',1).str.isdigit().all() == False:
+# Try to filter EQ if exists, else use all
+if 'Series' in df.columns and (df['Series']=='EQ').any():
+    df_eq = df[df['Series']=='EQ']
+    if len(df_eq) > 60:
+        df = df_eq
+
+# Remove only extreme junk, not all
+df = df[df[close_col] > 0]
+
+if len(df) < 70:
+    st.warning("CSV has too few rows. Downloading real Reliance data from Yahoo...")
+    import yfinance as yf
+    df = yf.download("RELIANCE.NS", period="5y", auto_adjust=True).reset_index()
+    date_col = 'Date'
+    close_col = 'Close'
     df[close_col] = pd.to_numeric(df[close_col], errors='coerce')
 
-df = df[df[close_col] > 50] # Remove 0.21, 0.23 junk
-df = df.dropna(subset=[close_col, date_col])
-df = df.drop_duplicates(subset=[date_col])
-
-st.success(f"Loaded: {len(df)} rows from {df[date_col].min().date()} to {df[date_col].max().date()}")
-st.dataframe(df.head())
+st.success(f"Loaded: {len(df)} rows from {df[date_col].min()} to {df[date_col].max()}")
+st.dataframe(df.tail())
 
 close_prices = df[[close_col]].values.astype(float)
-
-# LSTM
 scaler = MinMaxScaler()
 scaled = scaler.fit_transform(close_prices)
 
@@ -57,25 +54,19 @@ model = Sequential([LSTM(50, return_sequences=True, input_shape=(60,1)), LSTM(50
 model.compile(optimizer='adam', loss='mse')
 model.fit(X,y, epochs=5, batch_size=32, verbose=0)
 
-# Predict
-last_60 = scaled[-60:]
-future = []
-curr = last_60.reshape(1,60,1)
+# Forecast
+last = scaled[-60:].reshape(1,60,1)
+preds = []
+curr = last
 for _ in range(30):
-    pred = model.predict(curr, verbose=0)
-    future.append(pred[0,0])
-    curr = np.append(curr[:,1:,:], [[[pred[0,0]]]], axis=1)
+    p = model.predict(curr, verbose=0)[0,0]
+    preds.append(p)
+    curr = np.append(curr[:,1:,:], [[[p]]], axis=1)
 
-future_prices = scaler.inverse_transform(np.array(future).reshape(-1,1))
+future = scaler.inverse_transform(np.array(preds).reshape(-1,1))
 
-# Plot
 fig = go.Figure()
 fig.add_trace(go.Scatter(y=close_prices.flatten(), name="Actual"))
-fig.add_trace(go.Scatter(y=list(range(len(close_prices), len(close_prices)+30)),
-                         x=list(range(len(close_prices), len(close_prices)+30)),
-                         mode='lines', name="Future"))
-# Better future plot
-future_x = list(range(len(close_prices), len(close_prices)+30))
-fig.add_trace(go.Scatter(x=future_x, y=future_prices.flatten(), name="Predicted Next 30 Days"))
+fig.add_trace(go.Scatter(x=list(range(len(close_prices), len(close_prices)+30)), y=future.flatten(), name="Predicted 30 Days"))
 st.plotly_chart(fig)
-st.write("Next Day Prediction:", float(future_prices[0]))
+st.metric("Next Day Prediction", f"Rs. {float(future[0][0]):.2f}")
